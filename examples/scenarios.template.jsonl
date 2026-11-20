@@ -1,0 +1,2 @@
+{"id":"cart-update","description":"Add Notebook to the cart. Set Quantity to 2 and click Update cart. Verify the saved quantity is 2 and the total is CNY 50.00.","base_url":"http://127.0.0.1:18080","max_steps":35}
+

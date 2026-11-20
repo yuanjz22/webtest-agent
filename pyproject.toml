@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "webtest-agent"
+version = "0.1.1"
+description = "Evidence-grounded functional testing for web applications"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+    "playwright>=1.48,<2",
+    "python-dotenv>=1.0,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "httpx>=0.27,<1"]
+
+[project.scripts]
+webtest = "webtest_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["webtest_agent*"]
+
+[tool.setuptools.package-data]
+webtest_agent = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Web 测试工作台</title><link rel="stylesheet" href="/static/style.css"></head>
+<body>
+<header><div><h1>Web 应用自主测试工作台</h1><p>提交场景，跟踪执行，逐项复核页面证据。</p></div><span id="health" class="badge">正在连接服务</span></header>
+<main>
+<section class="panel"><h2>新建测试任务</h2><form id="run-form">
+<label>运行模式<select id="mode"><option value="llm">真实模型 · deepseek-flash</option><option value="demo">本地演示夹具 · 不用于评测</option></select></label>
+<div class="row"><label>场景编号<input id="scenario-id" value="custom" required></label><label>浏览器操作上限<input id="max-steps" type="number" min="1" max="35" value="35" required></label></div>
+<label>应用地址<input id="base-url" type="url" value="http://127.0.0.1:18080" required></label>
+<label>英文测试场景<textarea id="description" rows="6" required>Add Notebook (unit price CNY 25.00) to the cart. Change Quantity to 2 and click Update cart. Verify that the cart contains Notebook, the saved cart quantity is 2, and the cart total is CNY 50.00.</textarea></label>
+<label>执行策略<select id="strategy"><option value="checkpoint">检查点状态驱动</option><option value="baseline">基础状态反馈对照</option></select></label>
+<p class="hint">演示模式需要先运行 <code>webtest demo-server</code>。正式模型接口在服务端配置，页面不接收密钥。</p>
+<button id="submit" type="submit">启动测试</button><p id="error" role="alert"></p>
+</form></section>
+<section class="panel"><div class="section-title"><h2>任务记录</h2><button class="quiet" id="refresh">刷新</button></div><div id="runs" class="runs"><p class="muted">尚无任务。</p></div></section>
+<section class="panel detail"><div class="section-title"><h2>结果与执行证据</h2><a id="export" hidden>导出完整材料</a></div><div id="detail"><p class="muted">选择一条任务，查看检查点、步骤和截图。</p></div></section>
+</main><footer>本机研发工作台 · 初步实现 · 35 步预算包含失败重试</footer><script src="/static/app.js"></script>
+</body></html>
