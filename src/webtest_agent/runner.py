@@ -146,8 +146,8 @@ def run_scenario(scenario: Scenario, orchestrator, browser, run_id: str, *, acto
     if observation is None:
         return report("No reliable initial browser observation is available.")
 
-    # Browser actions remain capped; a small separate allowance handles state changes during model calls.
-    for _ in range(scenario.max_steps + MAX_VERDICT_REFRESHES + 1):
+    # Each new stage can be assessed on the current snapshot before spending another action.
+    for _ in range(scenario.max_steps + len(checkpoints) + MAX_VERDICT_REFRESHES):
         current = active_stage(checkpoints)
         try:
             assessment = agent_call(
@@ -183,6 +183,9 @@ def run_scenario(scenario: Scenario, orchestrator, browser, run_id: str, *, acto
                  assessments=assessment.assessments, reason=assessment.reason)
         if verdict != "INCONCLUSIVE":
             return report()
+
+        if active_stage(checkpoints)[0].stage != current[0].stage:
+            continue
 
         remaining = scenario.max_steps - steps
         if remaining == 0:

@@ -101,8 +101,10 @@ def test_stage_progress_preserves_earlier_evidence_and_rejects_premature_assessm
             fake_browser.text = "disabled"
 
     def assess(scenario, observation, checks, previous, last_action):
-        expected_id = "before" if observation.text == "enabled" else "after"
-        assert [item.id for item in checks] == [expected_id]
+        expected_id, = [item.id for item in checks]
+        if expected_id == "after" and observation.text == "enabled":
+            return AssessmentResult()
+        assert expected_id == ("before" if observation.text == "enabled" else "after")
         accepted = {"checkpoint_id": expected_id, "status": "PASS",
                     "evidence_ids": [observation.id], "quote": observation.text, "reason": "Observed state"}
         # An earlier model answer must not approve a check reserved for the next stage.
@@ -120,6 +122,48 @@ def test_stage_progress_preserves_earlier_evidence_and_rejects_premature_assessm
     report = run(roles, fake_browser)
     assert report.verdict == "PASS" and report.steps == 2
     assert [check.evidence_ids for check in report.checkpoints] == [["E1"], ["E2"]]
+
+
+def test_stage_transition_verifies_current_snapshot_before_actor_can_change_it(roles, fake_browser):
+    orchestrator, actor, assertor = roles
+    orchestrator.checkpoints = parse_plan({"stages": [
+        [{"id": "opened", "description": "Open the confirmation page"}],
+        [{"id": "preview", "description": "Check the displayed total before confirming"}],
+        [{"id": "saved", "description": "Verify the confirmation receipt"}],
+    ]})
+    fake_browser.text = "Open confirmation dialog"
+    execute = fake_browser.execute
+    states = iter(("Confirmation dialog: Total $42", "Receipt created"))
+
+    def change_page(action):
+        execute(action)
+        if action.kind == "click":
+            fake_browser.text = next(states)
+
+    def assess(scenario, observation, checks, previous, last_action):
+        checkpoint, = checks
+        visible = {"opened": "Confirmation dialog", "preview": "Total $42", "saved": "Receipt created"}
+        quote = visible[checkpoint.id]
+        if quote not in observation.text:
+            return AssessmentResult()
+        return AssessmentResult([{"checkpoint_id": checkpoint.id, "status": "PASS",
+                                  "evidence_ids": [observation.id], "quote": quote,
+                                  "reason": "Required state is visible"}])
+
+    scheduled = []
+
+    def select_task(scenario, observation, checks, history, remaining):
+        checkpoint, = checks
+        scheduled.append(checkpoint.id)
+        return TaskDirective([checkpoint.id], "Continue the confirmation workflow")
+
+    fake_browser.execute = change_page
+    assertor.assess = assess
+    orchestrator.select_task = select_task
+    report = run(roles, fake_browser, max_steps=3)
+    assert report.verdict == "PASS" and report.steps == 3
+    assert scheduled == ["opened", "saved"]
+    assert [c.evidence_ids for c in report.checkpoints] == [["E2"], ["E2"], ["E3"]]
 
 
 def test_last_allowed_action_is_verified_with_before_after_evidence(roles, fake_browser):
