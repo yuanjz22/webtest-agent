@@ -59,7 +59,6 @@ python -m pytest -q
 
 ```text
 webtest-agent/
-├── .github/workflows/tests.yml    # CI 在 Chromium 上运行 pytest
 ├── examples/                      # 单场景 JSON 和批量 JSONL 示例
 ├── src/webtest_agent/
 │   ├── cli.py、__main__.py         # 命令行入口
