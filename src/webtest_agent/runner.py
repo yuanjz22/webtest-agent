@@ -9,7 +9,8 @@ from typing import Callable
 from .llm import AgentError
 from .models import (Action, ActionDecision, ActionOutcome, AssessmentResult, Checkpoint,
                      MODEL_NAME, RunReport, Scenario, TaskDirective)
-from .verifier import apply_assessments, invalidate_changed_page, verdict_from_checkpoints
+from .verifier import (apply_assessments, invalidate_changed_page, terminal_evidence_still_current,
+                       verdict_from_checkpoints)
 
 
 MAX_VERDICT_REFRESHES = 3
@@ -86,10 +87,17 @@ def run_scenario(scenario: Scenario, orchestrator, browser, run_id: str, *, acto
         if action.kind == "finish" or steps >= scenario.max_steps:
             raise RuntimeError("Browser action outside the shared budget")
         steps += 1
-        target = next((element for element in source.elements if element.get("id") == action.target), None) if source else None
-        evidence = {"source_observation_id": source.id} if source else {}
-        if target is not None:
-            evidence["target_element"] = {key: target[key] for key in ("name", "role", "dom_id", "test_id") if target.get(key)}
+        evidence = {}
+        if source:
+            by_id = {element["id"]: element for element in source.elements if "id" in element}
+            evidence["source_observation_id"] = source.id
+            targets = {"target_element": action.target}
+            if action.kind == "drag":
+                targets["destination_element"] = action.value
+            for event_key, handle in targets.items():
+                element = by_id.get(handle)
+                if element is not None:
+                    evidence[event_key] = {key: element[key] for key in ("name", "role", "dom_id", "test_id", "facts") if element.get(key)}
         emit("action", action=asdict(action), **evidence)
         try:
             browser.execute(action)
@@ -166,17 +174,20 @@ def run_scenario(scenario: Scenario, orchestrator, browser, run_id: str, *, acto
             fresh = observe()
             if fresh is None:
                 return report("Final verdict could not be confirmed against a fresh page observation.")
-            if fresh.url != observation.url or fresh.state_hash != observation.state_hash:
+            current_quotes = [c.quote for c in candidate if c.scope_url == observation.url and c.quote]
+            if not terminal_evidence_still_current(observation, fresh, scenario.description, current_quotes):
                 verdict_refreshes += 1
                 emit("verdict_recheck", previous_observation_id=observation.id,
                      observation_id=fresh.id, proposed_verdict=verdict,
+                     evidence_quotes=current_quotes,
                      reason="Page changed while the assertor was evaluating; discard the stale proposal.")
                 observation = fresh
                 if verdict_refreshes >= MAX_VERDICT_REFRESHES:
                     return report("Page kept changing during final verification; no stable verdict could be confirmed.")
                 continue
             emit("verdict_confirmed", observation_id=observation.id,
-                 confirmation_observation_id=fresh.id, verdict=verdict)
+                 confirmation_observation_id=fresh.id, verdict=verdict,
+                 same_snapshot=fresh.state_hash == observation.state_hash)
         checkpoints = candidate
         if outcomes:
             emit("assessments", role="assertor", stage=current[0].stage, observation_id=observation.id, results=outcomes,
@@ -198,7 +209,8 @@ def run_scenario(scenario: Scenario, orchestrator, browser, run_id: str, *, acto
             return report("Three actions made no observable progress; stopped after final assertion check.")
 
         history = [e for e in events if e["kind"] in {
-            "action", "action_error", "recovery", "no_progress", "task_selected"}]
+            "action", "action_error", "recovery", "no_progress", "task_selected"
+        } or (strategy == "checkpoint" and e["kind"] == "unchanged_after_action")]
         current = active_stage(checkpoints)
         try:
             task = agent_call("orchestrator", "select_task", orchestrator.select_task,
@@ -240,5 +252,8 @@ def run_scenario(scenario: Scenario, orchestrator, browser, run_id: str, *, acto
         observation = observe()
         if observation is None:
             return report("Observation failed after an action; retained evidence is insufficient for a complete verdict.")
-        no_progress = no_progress + 1 if observation.state_hash == previous_observation.state_hash else 0
+        unchanged = observation.state_hash == previous_observation.state_hash
+        if unchanged and last_action.success:
+            emit("unchanged_after_action", action_step=steps, observation_id=observation.id)
+        no_progress = no_progress + 1 if unchanged else 0
     return report("Decision budget exhausted; no further browser actions were attempted.")

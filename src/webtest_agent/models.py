@@ -87,6 +87,7 @@ class Observation:
     elements: list[dict]
     screenshot: str
     state_hash: str
+    relative_times: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass

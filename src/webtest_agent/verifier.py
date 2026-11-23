@@ -6,6 +6,8 @@ these checks; object-level before/after validation is a subsequent milestone.
 """
 from __future__ import annotations
 
+import re
+from collections import Counter
 from pathlib import Path
 
 from .models import Checkpoint, Observation
@@ -25,6 +27,49 @@ def quote_is_observed(quote: str, observation: Observation) -> bool:
     if quote in observation.text:
         return True
     return any(element_supports_quote(element, quote) for element in observation.elements)
+
+
+RELATIVE_TIME_REQUIREMENT = re.compile(
+    r"\b(?:relative time|elapsed|timestamp|time since|\d+ seconds?|countdown|minutes? ago)\b"
+    r"|相对时间|倒计时|时间戳|秒前|分钟前", re.I,
+)
+
+
+def mask_relative_time_lines(text: str, labels) -> str:
+    return "\n".join("<relative time>" if line in labels else line for line in text.split("\n"))
+
+
+def terminal_evidence_still_current(before: Observation, after: Observation,
+                                    requirements: str, quotes: list[str]) -> bool:
+    """Allow a display clock to tick if its absolute value and the evidence stay the same."""
+    if before.url != after.url:
+        return False
+    if before.state_hash == after.state_hash:
+        return True
+    old, new = before.relative_times, after.relative_times
+    if not old or old == new or [t["absolute"] for t in old] != [t["absolute"] for t in new]:
+        return False
+    if RELATIVE_TIME_REQUIREMENT.search(requirements):
+        return False
+    labels = {t["label"] for t in old + new}
+    if any(any(label in quote for label in labels) or not quote_is_observed(quote, after) for quote in quotes):
+        return False
+
+    def normalized(observation):
+        counts = Counter(t["label"] for t in observation.relative_times)
+
+        def mask(text):
+            return mask_relative_time_lines(text, counts)
+
+        # Ambiguous or inline occurrences need the ordinary, stricter recheck.
+        if Counter(line for line in observation.text.splitlines() if line in counts) != counts:
+            return None
+        elements = [{key: mask(value) if key in ("text", "name") and isinstance(value, str) else value
+                     for key, value in item.items() if key != "id"} for item in observation.elements]
+        return mask(observation.text), elements
+
+    old_state = normalized(before)
+    return old_state is not None and old_state == normalized(after)
 
 
 def invalidate_changed_page(checkpoints: list[Checkpoint], observation: Observation) -> list[str]:

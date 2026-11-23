@@ -1,7 +1,24 @@
 import pytest
 
 from webtest_agent.models import Checkpoint, Observation
-from webtest_agent.verifier import apply_assessments, invalidate_changed_page, quote_is_observed
+from webtest_agent.verifier import (apply_assessments, invalidate_changed_page, quote_is_observed,
+                                    terminal_evidence_still_current)
+
+
+def test_stable_evidence_survives_only_a_relative_timestamp_tick():
+    def snapshot(seconds, description="Draft is ready.", absolute="21.11.2026 18:20"):
+        label = f"{seconds} seconds ago"
+        text = f"Card details\n{label}\n{description}"
+        return Observation(str(seconds), "http://localhost/card/42", text,
+                           [{"id": f"obs-{seconds}-modal", "name": text, "role": "dialog"}],
+                           "", text, [{"label": label, "absolute": absolute}])
+
+    start, end = snapshot(8), snapshot(10)
+    assert terminal_evidence_still_current(start, end, "Verify the description.", ["Draft is ready."])
+    assert not terminal_evidence_still_current(start, end, "Verify the relative time.", ["Draft is ready."])
+    assert not terminal_evidence_still_current(start, end, "Verify the card.", ["8 seconds ago"])
+    assert not terminal_evidence_still_current(start, snapshot(10, "Draft was rejected."), "Verify the card.", ["Draft is ready."])
+    assert not terminal_evidence_still_current(start, snapshot(10, absolute="22.11.2026 18:20"), "Verify the card.", ["Draft is ready."])
 
 
 @pytest.mark.parametrize("quote,expected", [

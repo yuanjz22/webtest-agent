@@ -5,6 +5,7 @@ from dataclasses import asdict
 
 from .llm import AgentError, ModelClient, SCENARIO_DATA_RULE, UNTRUSTED_DATA_RULE, json_object, observation_content
 from .models import ActionOutcome, AssessmentResult, Checkpoint, Observation, Scenario
+from .verifier import RELATIVE_TIME_REQUIREMENT, mask_relative_time_lines, quote_is_observed
 
 
 def parse_assessment_result(payload: dict) -> AssessmentResult:
@@ -83,6 +84,8 @@ class AssertorAgent:
             "Quote EXACT current page text or a captured "
             "visible element's text/name/value or copy one entire string from its facts array. Use checked=true/false "
             "facts for checkbox state, never the value 'on'. For exact whitespace use the raw quoted row text fact. "
+            "Quote one short line or one complete fact that identifies the evidence. "
+            "The marker <relative time> omits an unrelated display clock and cannot be quoted. "
             "Prefer one short assessment per supported checkpoint and omit unresolved ones. "
             "Assess only the supplied active stage and omit intermediate checks already marked PASS. "
             "Do not assess a later phase until its procedure occurred; a later expected state is not a failure "
@@ -97,7 +100,9 @@ class AssertorAgent:
             "Absence alone without a completed scoped check is NOT proof of FAIL. Use UNKNOWN when evidence "
             "shows loading, an unfinished prerequisite, or inconsistent/transitional page state. Do not fail "
             "a postcondition before its prerequisite action and resulting page update have completed. "
-            "Trace the exact last action to its target in the previous observation. State what prerequisite "
+            "Trace the exact last action to its target in the previous observation. For a drag, inspect the "
+            "resolved destination separately; an unrelated control or a list heading without drop-target "
+            "evidence does not establish that the intended drag was attempted. State what prerequisite "
             "was actually performed before proposing FAIL. Creating an object does not perform subsequent "
             "edits to it. A state that the actor is still supposed to change is UNKNOWN, not FAIL. "
             "Input values are in elements[].value and may not appear in the body text. "
@@ -105,22 +110,43 @@ class AssertorAgent:
             "is insufficient. Omit checks outside the current page's scope so valid other-page evidence can "
             "be retained. Do not propose actions, change the requirements, or decide when execution stops."
         )
+        observed = observation_content(observation)
+        if observation.relative_times and not RELATIVE_TIME_REQUIREMENT.search(scenario.description):
+            labels = {item["label"] for item in observation.relative_times}
+            observed["text"] = mask_relative_time_lines(observed["text"], labels)
+            for element in observed["elements"]:
+                for key in ("text", "name"):
+                    if isinstance(element.get(key), str):
+                        element[key] = mask_relative_time_lines(element[key], labels)
         # The actor's reasoning and the orchestrator's stopping claims are deliberately absent.
         content = {"scenario": scenario.description, "base_url": scenario.base_url,
-                   "observation": observation_content(observation),
+                   "observation": observed,
                    "checkpoints": [asdict(checkpoint) for checkpoint in checkpoints],
                    "previous_observation": observation_content(previous_observation) if previous_observation else None,
                    "last_action": asdict(last_action) if last_action else None}
         if previous_observation and last_action:
-            content["last_action_target"] = next((item for item in previous_observation.elements
-                                                   if item.get("id") == last_action.action.target), None)
+            previous_elements = {item.get("id"): item for item in previous_observation.elements}
+            content["last_action_target"] = previous_elements.get(last_action.action.target)
+            if last_action.action.kind == "drag":
+                content["last_action_destination"] = previous_elements.get(last_action.action.value)
         payload = self.client.request("assertor", prompt, content)
+        correction = ""
         try:
             result = parse_assessment_result(payload)
         except AgentError as exc:
-            # One schema correction, without introducing a second browser action or changing evidence.
             correction = (" Previous reply failed validation: " + str(exc) +
                           '. Example item: {"checkpoint_id":"C1","status":"UNKNOWN","evidence_ids":[],'
                           '"quote":"","reason":"Insufficient evidence"}.')
+        else:
+            if any(item["status"] in {"PASS", "FAIL"} and not quote_is_observed(item["quote"], observation)
+                   for item in result.assessments):
+                correction = (
+                    " The previous reply used a quote that was not present in the captured page. "
+                    "Reassess the same checks and return the full response. Use a short, exact substring "
+                    "of a single visible line or one complete fact. Never cite the <relative time> marker "
+                    "or join text from different lines. If the page lacks supporting evidence, use UNKNOWN."
+                )
+        if correction:
+            # One correction per observation for output structure or grounding.
             result = parse_assessment_result(self.client.request("assertor", prompt + correction, content))
         return self._confirm_failures(result, content)
