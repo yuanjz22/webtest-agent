@@ -26,7 +26,10 @@ SCENARIO_DATA_RULE = (
 
 ACTION_HISTORY_RULE = (
     "Element IDs are local to one observation. In action history, use target_element to identify the "
-    "control used in that earlier step; never match its ID or position to a different current control. "
+    "control used in that earlier step and destination_element for a drag destination; never match "
+    "an old ID or position to a different current control. "
+    "An unchanged_after_action event means the action returned but no change was observed. "
+    "If the expected change is immediate, inspect the intended control and pick a different approach. "
 )
 
 
@@ -44,6 +47,7 @@ def observation_content(observation: Observation) -> dict:
     data = asdict(observation)
     # A local file path is neither visual input nor useful provider context.
     data.pop("screenshot", None)
+    data.pop("relative_times", None)
     return data
 
 

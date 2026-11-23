@@ -168,6 +168,32 @@ class BrowserIntegrationTests(unittest.TestCase):
                 browser._page.wait_for_selector("#cart-details", state="visible")
                 self.assertIsNotNone(self._target(browser.observe(), "Quantity"))
 
+    def test_navigation_between_dom_and_screenshot_gets_a_fresh_snapshot(self):
+        from playwright.sync_api import Error
+
+        with demo_server() as url, tempfile.TemporaryDirectory() as directory:
+            with PlaywrightBrowser(url, Path(directory)) as browser:
+                self._open(browser, url)
+                target = url + "/saved"
+                browser._page.route(target, lambda route: route.fulfill(
+                    content_type="text/html", body="<main>Saved successfully</main>"))
+                original = browser._page.screenshot
+                captures = 0
+
+                def screenshot_while_navigating(**kwargs):
+                    nonlocal captures
+                    captures += 1
+                    if captures == 1:
+                        browser._page.goto(target, wait_until="domcontentloaded")
+                        raise Error("Execution context was destroyed, most likely because of a navigation")
+                    return original(**kwargs)
+
+                with patch.object(browser._page, "screenshot", side_effect=screenshot_while_navigating):
+                    observed = browser.observe()
+                self.assertEqual(captures, 2)
+                self.assertEqual(observed.url, target)
+                self.assertEqual(observed.text, "Saved successfully")
+
     def test_unstable_capture_does_not_publish_mixed_evidence(self):
         with demo_server() as url, tempfile.TemporaryDirectory() as directory:
             with PlaywrightBrowser(url, Path(directory)) as browser:
@@ -272,6 +298,50 @@ class BrowserIntegrationTests(unittest.TestCase):
                 browser.execute(Action("click", self._target(opened, "Menu action")))
                 self.assertIn("Done", {element["name"] for element in browser.observe().elements})
 
+    def test_pointer_drag_uses_the_observed_drop_area_with_its_list_context(self):
+        html = """
+        <style>
+          section { display: inline-block; width: 140px; vertical-align: top; }
+          [data-rbd-droppable-id] { height: 60px; background: #eee; }
+        </style>
+        <section data-rbd-draggable-id="list:1">
+          <div data-rbd-drag-handle-draggable-id="list:1">Queue</div>
+          <button id="source" data-rbd-draggable-id="card:3"
+            data-rbd-drag-handle-draggable-id="card:3">Draft</button>
+        </section>
+        <section data-rfd-draggable-id="list:2">
+          <div data-rfd-drag-handle-draggable-id="list:2">Done</div>
+          <button title="Collapse List"></button>
+          <div id="area" data-rfd-droppable-id="list:2">Existing item</div>
+        </section>
+        <p id="status">Waiting</p>
+        <script>
+          const source = document.getElementById('source');
+          const area = document.getElementById('area');
+          let origin = null;
+          let moved = false;
+          source.onmousedown = event => { origin = event.clientX; };
+          document.onmousemove = event => {
+            if (origin !== null && Math.abs(event.clientX - origin) > 8) moved = true;
+          };
+          document.onmouseup = event => {
+            if (moved && event.target === area) document.getElementById('status').textContent = 'Draft dropped';
+            origin = null;
+          };
+        </script>"""
+        with demo_server() as url, tempfile.TemporaryDirectory() as directory:
+            with PlaywrightBrowser(url, Path(directory)) as browser:
+                path = url + "/drag-fixture"
+                browser._page.route(path, lambda route: route.fulfill(content_type="text/html", body=html))
+                browser.execute(Action("navigate", value=path))
+                observed = browser.observe()
+                toggle = next(element for element in observed.elements if element["name"] == "Collapse List")
+                self.assertIn('Within "Done"', toggle["facts"])
+                source = self._target(observed, "Draft")
+                destination = self._target(observed, "Drop zone for Done")
+                browser.execute(Action("drag", source, destination))
+                self.assertIn("Draft dropped", browser.observe().text)
+
     def test_reload_issues_a_new_request_with_fragment_and_preserves_current_page(self):
         loads = []
 
@@ -296,6 +366,16 @@ class BrowserIntegrationTests(unittest.TestCase):
                 link = next(element for element in after.elements if element["name"] == "Active")
                 self.assertIn('Link "Active" class=selected', link["facts"])
 
+    def test_reload_captures_content_loaded_after_an_empty_document_shell(self):
+        html = "<body><script>setTimeout(() => { document.body.textContent = 'Board ready'; }, 200)</script></body>"
+        with demo_server() as url, tempfile.TemporaryDirectory() as directory:
+            with PlaywrightBrowser(url, Path(directory)) as browser:
+                path = url + "/async-shell"
+                browser._page.route(path, lambda route: route.fulfill(content_type="text/html", body=html))
+                browser.execute(Action("navigate", value=path))
+                browser.execute(Action("reload"))
+                self.assertEqual(browser.observe().text, "Board ready")
+
     def test_navigation_and_network_remain_same_origin(self):
         with demo_server() as url, demo_server() as other, tempfile.TemporaryDirectory() as directory:
             with PlaywrightBrowser(url, Path(directory)) as browser:
@@ -309,6 +389,31 @@ class BrowserIntegrationTests(unittest.TestCase):
                 self.assertIn(other + "/health", browser.blocked_requests)
                 with self.assertRaises(ValueError):
                     browser.execute(Action("evaluate", value="document.body.innerHTML=''"))
+
+    def test_same_origin_noop_link_and_named_select_values(self):
+        html = """
+          <a href="javascript:void(0);" onclick="document.querySelector('form').hidden=false">Add contact</a>
+          <a href="javascript:document.body.innerHTML='replaced'">Script URL</a>
+          <form hidden><label for="group">Group</label>
+            <select id="group">
+              <option value="outside">Visitors</option><option value="9b-opaque">Members</option>
+            </select>
+          </form>"""
+        with demo_server() as url, tempfile.TemporaryDirectory() as directory:
+            with PlaywrightBrowser(url, Path(directory)) as browser:
+                address = url + "/form-fixture"
+                browser._page.route(address, lambda r: r.fulfill(content_type="text/html", body=html))
+                browser.execute(Action("navigate", value=address))
+                initial = browser.observe()
+                with self.assertRaises(BrowserError):
+                    browser.execute(Action("click", self._target(initial, "Script URL")))
+                browser.execute(Action("click", self._target(initial, "Add contact")))
+                form = browser.observe()
+                browser.execute(Action("select", self._target(form, "Group"), "Members"))
+                selected = browser.observe()
+                group = next(e for e in selected.elements if e["name"] == "Group")
+                self.assertEqual(group["value"], "9b-opaque")
+                self.assertIn('Option "Members" selected=true', group["facts"])
 
     def test_role_pipeline_saves_real_demo_success_and_failure_evidence(self):
         for query, expected in (("", "PASS"), ("/?fault=wrong_total", "FAIL")):

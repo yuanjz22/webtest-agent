@@ -92,6 +92,28 @@ def test_assertor_schema_cannot_supply_browser_actions():
         parse_assessment_result({"assessments": [], "reason": "Done", "action": {"kind": "click"}})
 
 
+def test_assertor_retries_quote_using_real_page_evidence():
+    class Client:
+        def __init__(self):
+            self.prompts = []
+
+        def request(self, role, prompt, content):
+            self.prompts.append(prompt)
+            quote = "<relative time>\nDraft is ready." if len(self.prompts) == 1 else "Draft is ready."
+            return {"assessments": [{"checkpoint_id": "C1", "status": "PASS",
+                                     "evidence_ids": ["E1"], "quote": quote,
+                                     "reason": "The card contains its expected description."}], "reason": "Observed"}
+
+    page = Observation("E1", "http://localhost", "10 seconds ago\nDraft is ready.", [], "", "a",
+                       [{"label": "10 seconds ago", "absolute": "21.11.2026 18:20"}])
+    client = Client()
+    result = AssertorAgent(client).assess(Scenario("detail", "Verify description.", page.url), page,
+                                         [Checkpoint("C1", "Verify the card description")], None, None)
+    assert len(client.prompts) == 2
+    assert "not present in the captured page" in client.prompts[1]
+    assert result.assessments[0]["quote"] == "Draft is ready."
+
+
 @pytest.mark.parametrize("action_kind,value,confirmed_ids,status", [
     ("fill", "New item", [], "UNKNOWN"),
     ("press", "Enter", ["C1"], "FAIL"),
